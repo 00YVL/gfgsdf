@@ -1,0 +1,252 @@
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, send_from_directory
+import os
+import math
+import uuid
+import datetime
+
+app = Flask(__name__)
+
+UPLOAD_FOLDER = '/root/cloudfiles/'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+HTML_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Levi's Cloud</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 700px; margin: auto; padding: 20px; color: #333; background-color: #f4f4f4; }
+        h1 { color: #333; text-align: center; font-size: 1.8em; }
+        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); margin-top: 20px; }
+        
+        /* Tabs styling */
+        .tabs { display: flex; justify-content: center; border-bottom: 2px solid #ddd; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; margin: 0 5px; color: #007BFF; font-weight: bold; cursor: pointer; transition: background 0.3s; }
+        .tab.active { color: #fff; background-color: #007BFF; border-radius: 5px 5px 0 0; }
+        
+        /* Sections */
+        .section { display: none; }
+        .section.active { display: block; }
+        
+        /* Upload Section */
+        .upload-container h2 { font-size: 1.4em; color: #333; }
+        .upload-container form { display: flex; gap: 10px; align-items: center; }
+        input[type="file"] { padding: 5px; }
+        button { padding: 8px 16px; background-color: #007BFF; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: background 0.3s; }
+        button:hover { background-color: #0056b3; }
+        
+        /* File List Section */
+        .file-list h2 { font-size: 1.4em; color: #333; }
+        .file-item { padding: 12px; background-color: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
+        .file-link { color: #007BFF; font-weight: bold; text-decoration: none; }
+        .file-link:hover { text-decoration: underline; }
+        .file-details { color: #555; font-size: 0.9em; }
+
+        /* Pagination */
+        .pagination { display: flex; justify-content: space-between; margin-top: 15px; font-size: 0.9em; color: #555; }
+        .pagination a { text-decoration: none; color: #007BFF; font-weight: bold; }
+        .pagination span { color: #777; }
+    </style>
+    <script>
+        function showSection(section) {
+            document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
+            document.querySelector('#' + section).classList.add('active');
+            document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+            document.querySelector('[data-section="' + section + '"]').classList.add('active');
+        }
+        document.addEventListener('DOMContentLoaded', function() {
+            showSection('files');  // Default section to show on load
+        });
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>Levi's Home Cloud</h1>
+        
+        <!-- Tabs for navigation -->
+        <div class="tabs">
+            <div class="tab active" data-section="files" onclick="showSection('files')">Files</div>
+            <div class="tab" data-section="upload" onclick="showSection('upload')">Upload</div>
+        </div>
+
+        <!-- Section for Upload Files -->
+        <div id="upload" class="section">
+            <div class="upload-container">
+                <h2>Upload a New File</h2>
+                <form action="/upload" method="post" enctype="multipart/form-data">
+                    <input type="file" name="file" required>
+                    <button type="submit">Upload</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Section for Viewing Files -->
+        <div id="files" class="section active">
+            <div class="file-list">
+                <h2>Uploaded Files</h2>
+                {% if files %}
+                    {% for file in files %}
+                        <div class="file-item">
+                            <a href="{{ url_for('view_file', filename=file['name']) }}" class="file-link">{{ file['original_name'] }}</a>
+                            <div class="file-details">
+                                <span>{{ file['size'] }} | Uploaded: {{ file['upload_date'] }}</span>
+                            </div>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <p>No files uploaded yet.</p>
+                {% endif %}
+            </div>
+            
+            <div class="pagination">
+                {% if page > 1 %}
+                    <a href="{{ url_for('list_files', page=page-1) }}">Previous</a>
+                {% endif %}
+                <span>Page {{ page }} of {{ total_pages }}</span>
+                {% if page < total_pages %}
+                    <a href="{{ url_for('list_files', page=page+1) }}">Next</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+
+FILE_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Details</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 700px; margin: auto; padding: 20px; color: #333; background-color: #f4f4f4; }
+        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        .file-info { margin-top: 20px; }
+        .back-link { text-decoration: none; color: #007BFF; }
+        .back-link:hover { text-decoration: underline; }
+        .media-container { margin-top: 20px; text-align: center; }
+        img, video, audio { max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>File Details</h1>
+        <div class="file-info">
+            <p><strong>Original Filename:</strong> {{ original_name }}</p>
+            <p><strong>File Size:</strong> {{ size }}</p>
+            <p><strong>Upload Date:</strong> {{ upload_date }}</p>
+        </div>
+        <div class="media-container">
+            {% if is_image %}
+                <img src="{{ url_for('uploaded_file', filename=filename) }}" alt="Image file">
+            {% elif is_video %}
+                <video controls>
+                    <source src="{{ url_for('uploaded_file', filename=filename) }}" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+            {% elif is_audio %}
+                <audio controls>
+                    <source src="{{ url_for('uploaded_file', filename=filename) }}" type="audio/mpeg">
+                    Your browser does not support the audio tag.
+                </audio>
+            {% else %}
+                <p><a href="{{ url_for('uploaded_file', filename=filename) }}">Download {{ original_name }}</a></p>
+            {% endif %}
+        </div>
+        <a href="{{ url_for('list_files') }}" class="back-link">Back to file list</a>
+    </div>
+</body>
+</html>
+"""
+
+def generate_unique_filename(original_name):
+    unique_id = str(uuid.uuid4())
+    extension = os.path.splitext(original_name)[1]
+    return f"{unique_id}_{original_name}"
+
+def format_file_size(size):
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+
+@app.route('/')
+def list_files():
+    page = int(request.args.get('page', 1))
+    all_files = os.listdir(app.config['UPLOAD_FOLDER'])
+    all_files.sort()
+
+    per_page = 10
+    total_files = len(all_files)
+    total_pages = math.ceil(total_files / per_page)
+    paginated_files = all_files[(page - 1) * per_page:page * per_page]
+
+    files = []
+    for file in paginated_files:
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file)
+        stats = os.stat(file_path)
+        files.append({
+            "name": file,
+            "original_name": file.split("_", 1)[-1],
+            "size": format_file_size(stats.st_size),
+            "upload_date": datetime.datetime.fromtimestamp(stats.st_ctime).strftime("%Y-%m-%d %H:%M")
+        })
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        files=files,
+        page=page,
+        total_pages=total_pages
+    )
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+    
+    unique_filename = generate_unique_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+    file.save(filepath)
+    
+    return redirect(url_for('list_files'))
+
+@app.route('/file/<filename>')
+def view_file(filename):
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if not os.path.isfile(filepath):
+        return "File not found", 404
+
+    stats = os.stat(filepath)
+    original_name = filename.split("_", 1)[-1]
+    file_extension = os.path.splitext(filename)[1].lower()
+    is_image = file_extension in ['.png', '.jpg', '.jpeg', '.gif']
+    is_video = file_extension in ['.mp4', '.mov', '.webm']
+    is_audio = file_extension in ['.mp3', '.wav', '.ogg']
+
+    return render_template_string(
+        FILE_TEMPLATE,
+        original_name=original_name,
+        size=format_file_size(stats.st_size),
+        upload_date=datetime.datetime.fromtimestamp(stats.st_ctime).strftime("%Y-%m-%d %H:%M"),
+        filename=filename,
+        is_image=is_image,
+        is_video=is_video,
+        is_audio=is_audio
+    )
+
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
